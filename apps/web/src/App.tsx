@@ -207,6 +207,17 @@ export function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+      if (
+        e.key === "," &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !e.isComposing
+      ) {
+        e.preventDefault();
+        setSettings(true);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setCommand((v) => !v);
