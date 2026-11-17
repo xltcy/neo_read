@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@neoread/ui/components/select";
+import { Tabs, TabsList, TabsTrigger } from "@neoread/ui/components/tabs";
 import { Separator } from "@neoread/ui/components/separator";
 import { Slider } from "@neoread/ui/components/slider";
 import { Toggle } from "@neoread/ui/components/toggle";
@@ -93,23 +94,21 @@ export function ReadingTextControls({
       {library === "books" &&
         docType === "epub" &&
         readingMode === "source" && (
-          <Section title="阅读方式">
-            <Select
+          <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+            <span className="text-sm text-muted-foreground">阅读方式</span>
+            <Tabs
               value={theme.bookEpubFlow ?? "scroll"}
               onValueChange={(value) => {
                 if (value === "scroll" || value === "paginated")
                   setTheme({ bookEpubFlow: value });
               }}
             >
-              <SelectTrigger aria-label="阅读方式">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="scroll">连续滚动</SelectItem>
-                <SelectItem value="paginated">仿真翻页</SelectItem>
-              </SelectContent>
-            </Select>
-          </Section>
+              <TabsList className="w-full" aria-label="阅读方式">
+                <TabsTrigger value="scroll">连续滚动</TabsTrigger>
+                <TabsTrigger value="paginated">仿真翻页</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
         )}
       {showSource && (
         <>
