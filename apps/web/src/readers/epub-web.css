@@ -133,15 +133,34 @@
   perspective: 1400px;
   overflow: hidden;
 }
-.book-page-strip {
+.book-page-sheet {
   position: absolute;
-  height: calc(100% - 32px);
   top: 0;
-  overflow: hidden;
-  transform-origin: left center;
-  box-shadow: 1px 0 3px #0002;
+  height: 100%;
 }
-
+.book-page-leaf,
+.book-page-back {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  overflow: hidden;
+  transform-origin: 0 0;
+}
+.book-page-back {
+  filter: brightness(0.97);
+  box-shadow: 0 3px 18px #0003;
+}
+.book-page-fold-shadow {
+  position: absolute;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #0005 43%,
+    #fff5 52%,
+    transparent
+  );
+}
 .book-page-flow[data-pad-spread]::after {
   content: "";
   display: block;

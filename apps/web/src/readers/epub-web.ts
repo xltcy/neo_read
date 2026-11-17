@@ -387,7 +387,14 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     }
   }
   private reportPages() {
-    if (!this.pages || this.restoring || this.opening || this.disposed) return;
+    if (
+      !this.pages ||
+      this.pages.turning ||
+      this.restoring ||
+      this.opening ||
+      this.disposed
+    )
+      return;
     const view = this.container.getBoundingClientRect();
     const chapter = this.chapters.find((c) =>
       [...c.node.getClientRects()].some(

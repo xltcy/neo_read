@@ -59,3 +59,22 @@ it("does not turn a page while editing text", async () => {
   await Promise.resolve();
   expect(host.scrollLeft).toBe(0);
 });
+
+it("restores the original spread when a visible turn is cancelled", async () => {
+  const { host, pages, changed } = create();
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  const frame = vi.fn(() => 1);
+  vi.stubGlobal("requestAnimationFrame", frame);
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const turn = pages.turn(1);
+  await vi.waitFor(() => expect(frame).toHaveBeenCalled());
+  expect(host.scrollLeft).toBe(800);
+  expect(changed).not.toHaveBeenCalled();
+  expect(document.querySelector(".book-page-curl")).not.toBeNull();
+  expect(document.querySelector(".book-page-strip")).toBeNull();
+  pages.cancel();
+  await turn;
+  expect(host.scrollLeft).toBe(0);
+  expect(document.querySelector(".book-page-curl")).toBeNull();
+  expect(changed).not.toHaveBeenCalled();
+});

@@ -1,3 +1,4 @@
+import { pageFold, polygon } from "./page-fold";
 /** Horizontal CSS fragmentation keeps the source DOM and its UTF-16 ranges intact. */
 export class BookPages {
   readonly flow = document.createElement("div");
@@ -12,7 +13,18 @@ export class BookPages {
   };
   private busy = false;
   private revision = 0;
-  private animations: Animation[] = [];
+  private animationFrame = 0;
+  private finishAnimation?: () => void;
+  private origin?: number;
+  private target?: number;
+  private front?: HTMLElement;
+  private back?: HTMLElement;
+  private shade?: HTMLElement;
+  private topCorner = false;
+  private lift = 100;
+  get turning() {
+    return this.busy || !!this.drag || this.origin !== undefined;
+  }
 
   constructor(
     readonly viewport: HTMLElement,
@@ -44,7 +56,7 @@ export class BookPages {
         )
           return;
         if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-        if (window.getSelection()?.toString()) return;
+        if (this.turning || window.getSelection()?.toString()) return;
         event.preventDefault();
         void this.turn(event.key === "ArrowRight" ? 1 : -1).catch(failed);
       },
@@ -56,6 +68,7 @@ export class BookPages {
         if (
           event.button !== 0 ||
           this.busy ||
+          this.drag ||
           this.interactive(event.target) ||
           window.getSelection()?.toString()
         )
@@ -72,7 +85,12 @@ export class BookPages {
           pointer: event.pointerId,
         };
         viewport.setPointerCapture(event.pointerId);
-        this.snapshot(direction);
+        this.topCorner = event.clientY - rect.top < rect.height / 2;
+        this.lift = Math.min(rect.height * 0.25, this.pageWidth * 0.45);
+        void this.begin(direction).catch((error) => {
+          this.cancel();
+          failed(error);
+        });
       },
       { signal },
     );
@@ -85,7 +103,7 @@ export class BookPages {
           Math.min(
             1,
             ((this.drag.x - event.clientX) * this.drag.direction) /
-              this.pageWidth,
+              (this.pageWidth * 2),
           ),
         );
         this.curl(this.drag.progress, this.drag.direction);
@@ -103,13 +121,21 @@ export class BookPages {
         if (click || drag.progress >= 0.5)
           void this.turn(drag.direction, drag.progress).catch(failed);
         else
-          void this.animate(drag.progress, 0, drag.direction).then(() =>
-            this.clear(),
+          void this.rebound(drag.progress, drag.direction).catch(() =>
+            this.cancel(),
           );
       },
       { signal },
     );
     viewport.addEventListener("pointercancel", () => this.cancel(), { signal });
+    viewport.addEventListener(
+      "lostpointercapture",
+      () => {
+        if (this.drag) this.cancel();
+      },
+      { signal },
+    );
+    window.addEventListener("blur", () => this.cancel(), { signal });
     this.layout();
   }
   private interactive(target: EventTarget | null) {
@@ -150,27 +176,59 @@ export class BookPages {
         Math.floor((left + 1) / width) * width,
       );
   }
+  private starting?: Promise<void>;
+  private async begin(direction: number) {
+    if (this.starting) return this.starting;
+    this.starting = this.prepareTurn(direction);
+    try {
+      await this.starting;
+    } finally {
+      this.starting = undefined;
+    }
+  }
+  private async prepareTurn(direction: number) {
+    const revision = this.revision;
+    await this.prepare(direction);
+    if (revision !== this.revision) return;
+    const current = this.viewport.scrollLeft;
+    const target = Math.max(0, current + direction * this.viewport.clientWidth);
+    if (target === current || target >= this.flow.scrollWidth - 1) return;
+    this.snapshot(direction);
+    this.origin = current;
+    this.target = target;
+    this.viewport.scrollLeft = target;
+    if (this.drag) this.curl(this.drag.progress, direction);
+  }
   async turn(direction: number, from = 0) {
     if (this.busy) return;
     this.busy = true;
     const revision = this.revision;
     try {
-      await this.prepare(direction);
-      if (revision !== this.revision) return;
-      const width = this.viewport.clientWidth;
-      const current = this.viewport.scrollLeft;
-      const target = Math.max(0, current + direction * width);
-      if (target === current || target >= this.flow.scrollWidth - 1) return;
-      if (!this.overlay) this.snapshot(direction);
-      this.viewport.scrollLeft = target;
+      if (this.origin === undefined) await this.begin(direction);
+      if (revision !== this.revision || this.target === undefined) return;
       await this.animate(from, 1, direction);
-      if (revision === this.revision) this.changed();
+      if (revision === this.revision) {
+        this.origin = undefined;
+        this.target = undefined;
+        this.clear();
+        this.busy = false;
+        this.changed();
+      }
     } finally {
       if (revision === this.revision) {
         this.clear();
         this.busy = false;
       }
     }
+  }
+  private async rebound(from: number, direction: number) {
+    this.busy = true;
+    const revision = this.revision;
+    await this.starting;
+    if (revision !== this.revision) return;
+    await this.animate(from, 0, direction);
+    if (revision !== this.revision) return;
+    this.cancel();
   }
   progress(chapter: HTMLElement) {
     const view = this.viewport.getBoundingClientRect();
@@ -199,93 +257,120 @@ export class BookPages {
     overlay.setAttribute("aria-hidden", "true");
     overlay.inert = true;
     const rect = this.viewport.getBoundingClientRect();
+    const style = getComputedStyle(this.viewport);
+    const background = style.backgroundColor;
     Object.assign(overlay.style, {
       left: `${rect.left}px`,
       top: `${rect.top}px`,
       width: `${rect.width}px`,
-      height: `${rect.height}px`,
-      color: getComputedStyle(this.viewport).color,
+      height: `${rect.height - 32}px`,
+      color: style.color,
     });
-    const background = getComputedStyle(this.viewport).backgroundColor;
-    const offset = direction > 0 ? rect.width - this.pageWidth : 0;
-    for (let i = 0; i < 16; i++) {
-      const strip = document.createElement("div");
-      strip.className = "book-page-strip";
-      const slice = this.pageWidth / 16;
-      Object.assign(strip.style, {
-        left: `${offset + i * slice}px`,
-        width: `${slice + 1}px`,
-        background,
-      });
+    const page = (offset: number) => {
+      const leaf = document.createElement("div");
+      leaf.className = "book-page-leaf";
+      Object.assign(leaf.style, { width: `${this.pageWidth}px`, background });
       const copy = this.flow.cloneNode(true) as HTMLElement;
       copy
         .querySelectorAll("[id]")
         .forEach((node) => node.removeAttribute("id"));
       Object.assign(copy.style, {
         position: "absolute",
-        left: `${-this.viewport.scrollLeft - offset - i * slice}px`,
+        left: `${-this.viewport.scrollLeft - offset}px`,
         top: "0px",
-        font: getComputedStyle(this.viewport).font,
-        lineHeight: getComputedStyle(this.viewport).lineHeight,
+        font: style.font,
+        lineHeight: style.lineHeight,
       });
       copy.style.setProperty(
         "--reading-margin",
         this.viewport.style.getPropertyValue("--reading-margin"),
       );
-      strip.append(copy);
-      overlay.append(strip);
+      leaf.append(copy);
+      return leaf;
+    };
+    const offset = direction > 0 ? rect.width - this.pageWidth : 0;
+    if (this.columns === 2) {
+      const still = page(direction > 0 ? 0 : this.pageWidth);
+      still.style.left = `${direction > 0 ? 0 : this.pageWidth}px`;
+      overlay.append(still);
     }
+    const sheet = document.createElement("div");
+    sheet.className = "book-page-sheet";
+    Object.assign(sheet.style, {
+      left: `${offset}px`,
+      width: `${this.pageWidth}px`,
+      transform: `scale(${direction},${this.topCorner ? -1 : 1})`,
+    });
+    this.front = page(offset);
+    // Mirror the coordinate system without mirroring the printed side.
+    (this.front.firstElementChild as HTMLElement).style.transform =
+      `scale(${direction},${this.topCorner ? -1 : 1})`;
+    (this.front.firstElementChild as HTMLElement).style.transformOrigin =
+      `${this.viewport.scrollLeft + offset + this.pageWidth / 2}px ${(rect.height - 32) / 2}px`;
+    this.back = document.createElement("div");
+    this.back.className = "book-page-back";
+    Object.assign(this.back.style, {
+      width: `${this.pageWidth}px`,
+      background,
+    });
+    this.shade = document.createElement("div");
+    this.shade.className = "book-page-fold-shadow";
+    sheet.append(this.front, this.back, this.shade);
+    overlay.append(sheet);
     document.body.append(overlay);
     this.overlay = overlay;
+    this.curl(0, direction);
   }
-  private curl(progress: number, direction: number) {
-    if (!this.overlay) return;
-    [...this.overlay.children].forEach((node, index) => {
-      const strip = node as HTMLElement;
-      const phase = direction > 0 ? index / 15 : 1 - index / 15;
-      const angle = Math.min(
-        180,
-        Math.max(0, progress * 210 - (1 - phase) * 30),
-      );
-      const bend = Math.sin((angle * Math.PI) / 180);
-      strip.style.transform = `translateX(${-direction * progress * this.pageWidth}px) translateZ(${bend * 55}px) rotateY(${-direction * angle}deg)`;
-      (strip.firstElementChild as HTMLElement).style.visibility =
-        angle > 90 ? "hidden" : "visible";
-      strip.style.filter = `brightness(${1 - bend * 0.18})`;
+  private curl(progress: number, _direction: number) {
+    if (!this.front || !this.back || !this.shade) return;
+    const height = Math.max(1, this.viewport.clientHeight - 32);
+    const fold = pageFold(this.pageWidth, height, progress, this.lift);
+    this.front.style.clipPath = polygon(fold.front);
+    this.back.style.clipPath = polygon(fold.back);
+    this.back.style.transform = `matrix(${fold.matrix.join(",")})`;
+    this.back.style.visibility =
+      progress > 0 && progress < 1 ? "visible" : "hidden";
+    const strength = Math.sin(Math.PI * progress);
+    Object.assign(this.shade.style, {
+      left: `${fold.mid.x}px`,
+      top: `${fold.mid.y}px`,
+      width: `${24 + 24 * strength}px`,
+      height: `${Math.hypot(this.pageWidth, height) * 2}px`,
+      transform: `translate(-50%,-50%) rotate(${fold.angle}deg)`,
+      opacity: String(strength * 0.55),
     });
   }
   private async animate(from: number, to: number, direction: number) {
     if (!this.overlay) return;
-    this.curl(from, direction);
-    const starts = [...this.overlay.children].map(
-      (node) => (node as HTMLElement).style.transform,
-    );
-    this.curl(to, direction);
-    this.animations = [...this.overlay.children].map((node, i) =>
-      node.animate(
-        [
-          { transform: starts[i] },
-          { transform: (node as HTMLElement).style.transform },
-        ],
-        {
-          duration: 350 * Math.abs(to - from),
-          easing: "ease-out",
-          fill: "forwards",
-        },
-      ),
-    );
-    await Promise.all(
-      this.animations.map((animation) => animation.finished.catch(() => {})),
-    );
+    const duration = Math.max(100, 420 * Math.abs(to - from));
+    const start = performance.now();
+    await new Promise<void>((resolve) => {
+      this.finishAnimation = resolve;
+      const frame = (now: number) => {
+        const time = Math.min(1, (now - start) / duration);
+        const eased = 1 - (1 - time) ** 3;
+        this.curl(from + (to - from) * eased, direction);
+        if (time < 1) this.animationFrame = requestAnimationFrame(frame);
+        else {
+          this.finishAnimation = undefined;
+          resolve();
+        }
+      };
+      this.animationFrame = requestAnimationFrame(frame);
+    });
   }
   private clear() {
-    this.animations.forEach((animation) => animation.cancel());
-    this.animations = [];
+    cancelAnimationFrame(this.animationFrame);
+    this.finishAnimation?.();
+    this.finishAnimation = undefined;
     this.overlay?.remove();
     this.overlay = undefined;
+    this.front = this.back = this.shade = undefined;
   }
   cancel() {
     this.revision++;
+    if (this.origin !== undefined) this.viewport.scrollLeft = this.origin;
+    this.origin = this.target = undefined;
     if (this.drag && this.viewport.hasPointerCapture(this.drag.pointer))
       this.viewport.releasePointerCapture(this.drag.pointer);
     this.drag = undefined;
