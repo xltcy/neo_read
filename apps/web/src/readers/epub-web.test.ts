@@ -1022,3 +1022,16 @@ it("excludes reflow translations from cross-paragraph source quotes", async () =
     },
   });
 });
+
+it.each(["books", "papers"] as const)(
+  "only enables pagination for books (%s)",
+  async (library) => {
+    reader = new EPUBReaderAdapter(host, events);
+    reader.preferTheme({ ...defaultTheme, bookEpubFlow: "paginated" });
+    await reader.open({ id: "book", type: "epub", library } as Document);
+    expect(host.classList.contains("book-pages")).toBe(library === "books");
+    await reader.setTheme({ ...defaultTheme, bookEpubFlow: "scroll" });
+    expect(host.classList.contains("book-pages")).toBe(false);
+    expect(host.querySelector("[data-epub-block]")).not.toBeNull();
+  },
+);

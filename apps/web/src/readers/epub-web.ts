@@ -35,6 +35,8 @@ import {
 } from "./epub-web-location";
 import { EPUBBlockOverlay, epubBlockRect } from "./epub-block-focus";
 import "./epub-web.css";
+import { BookPages } from "./book-pages";
+import { reportDiagnostic } from "../diagnostics";
 
 let sequence = 0;
 type Chapter = {
@@ -47,6 +49,10 @@ type Chapter = {
 
 export class EPUBReaderAdapter implements ReaderAdapter {
   private doc?: Document;
+  private pages?: BookPages;
+  private pageSize = "";
+  private preparingPages = false;
+  private configuringPages?: Promise<boolean>;
   private chapters: Chapter[] = [];
   private toc: EPUBChapterLink[] = [];
   private blocks: EPUBReadingBlock[] = [];
@@ -233,6 +239,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       };
     });
     if (!this.chapters.length) throw new Error("这本 EPUB 没有可阅读的章节");
+    await this.configurePages();
     const initial =
       doc.progress?.type === "epub"
         ? doc.progress
@@ -270,6 +277,16 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     if (typeof ResizeObserver !== "undefined") {
       this.resize = new ResizeObserver(() => {
         if (this.container.closest("[inert]")) return;
+        if (this.pages) {
+          const size = `${this.container.clientWidth}:${this.container.clientHeight}`;
+          if (size !== this.pageSize) {
+            this.pageSize = size;
+            const location = this.location;
+            this.pages.layout();
+            void this.goTo(location).catch((e) => toast.error(e.message));
+          }
+          return;
+        }
         this.placeNotes();
         this.preserveAnchor();
         this.onScroll();
@@ -279,6 +296,149 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     }
     this.report();
     this.opening = false;
+  }
+  private async configurePages(): Promise<boolean> {
+    if (this.configuringPages) await this.configuringPages;
+    this.configuringPages = this.updatePages();
+    try {
+      return await this.configuringPages;
+    } catch (error) {
+      reportDiagnostic({
+        level: "error",
+        event: "epub.pagination_failed",
+        detail: "layout",
+      });
+      throw error;
+    } finally {
+      this.configuringPages = undefined;
+    }
+  }
+  private async updatePages() {
+    const enabled =
+      this.doc?.library === "books" && this.theme.bookEpubFlow === "paginated";
+    if (enabled === !!this.pages) return false;
+    if (enabled) {
+      const initial =
+        this.location.href ||
+        (this.doc?.progress?.type === "epub" ? this.doc.progress.href : "");
+      const index = Math.max(
+        0,
+        this.chapters.findIndex((c) => c === this.chapter(initial)),
+      );
+      for (const chapter of this.chapters.slice(
+        Math.max(0, index - 1),
+        index + 2,
+      )) {
+        await this.load(chapter);
+        if (this.disposed) return false;
+      }
+      this.pages = new BookPages(
+        this.container,
+        (direction) => this.preparePages(direction),
+        () => this.reportPages(),
+        (e) => toast.error(String(e)),
+      );
+    } else {
+      this.pages?.destroy();
+      this.pages = undefined;
+    }
+    return true;
+  }
+  private async preparePages(direction: number) {
+    if (this.preparingPages) return;
+    this.preparingPages = true;
+    try {
+      await this.loadPageDestination(direction);
+    } finally {
+      this.preparingPages = false;
+    }
+  }
+  private async loadPageDestination(direction: number) {
+    const location = this.location;
+    let navigation = this.navigation;
+    // Loading a short chapter can expose another chapter in the same spread.
+    // Continue until every chapter intersecting the destination is available.
+    for (;;) {
+      if (!this.pages || this.disposed) return;
+      const view = this.container.getBoundingClientRect();
+      const left = view.left + direction * view.width;
+      const right = left + view.width;
+      const missing = this.chapters.find(
+        (c) =>
+          !c.loaded &&
+          [...c.node.getClientRects()].some(
+            (r) => r.right > left && r.left < right,
+          ),
+      );
+      if (!missing) return;
+      this.restoring = true;
+      try {
+        await this.load(missing);
+      } finally {
+        this.restoring = false;
+      }
+      if (this.disposed || !this.pages) return;
+      if (navigation !== this.navigation) {
+        this.pages.cancel();
+        return;
+      }
+      if (location.href) await this.goTo(location);
+      navigation = this.navigation;
+    }
+  }
+  private reportPages() {
+    if (!this.pages || this.restoring || this.opening || this.disposed) return;
+    const view = this.container.getBoundingClientRect();
+    const chapter = this.chapters.find((c) =>
+      [...c.node.getClientRects()].some(
+        (r) => r.right > view.left + 1 && r.left < view.right - 1,
+      ),
+    );
+    if (!chapter) return;
+    const block = chapter.info.blocks.find((b) => {
+      const range = blockRange(this.container, {
+        block: b,
+        start: 0,
+        end: b.text.length,
+      });
+      return (
+        range &&
+        [...range.getClientRects()].some(
+          (r) => r.right > view.left + 1 && r.left < view.right - 1,
+        )
+      );
+    });
+    if (block) {
+      let start = 0,
+        end = block.text.length;
+      while (start < end) {
+        const middle = Math.floor((start + end) / 2);
+        const rect = blockRange(this.container, {
+          block,
+          start: middle,
+          end: middle + 1,
+        })?.getClientRects()[0];
+        if (rect && rect.right <= view.left) start = middle + 1;
+        else end = middle;
+      }
+      const before = chapter.info.blocks
+        .slice(0, chapter.info.blocks.indexOf(block))
+        .reduce((n, b) => n + b.text.length, 0);
+      this.location = {
+        type: "epub",
+        href: chapter.info.href,
+        blockId: block.id,
+        start,
+        end: start,
+        progression: (before + start) / Math.max(1, chapter.info.characters),
+      };
+      this.emitLocation();
+    } else {
+      this.location = { type: "epub", href: chapter.info.href, progression: 0 };
+      this.emitLocation();
+    }
+    this.placeNotes();
+    this.pages.progress(chapter.node);
   }
   private estimate(info: EPUBChapter) {
     const width = Math.max(
@@ -372,6 +532,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     }));
   }
   private rememberAnchor() {
+    if (this.pages) return;
     if (this.restoring || !this.container.clientHeight) return;
     const top = this.container.getBoundingClientRect().top;
     const nodes = Array.from(
@@ -406,6 +567,11 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     };
   }
   private preserveAnchor() {
+    if (this.pages) {
+      if (!this.restoring && !this.selection && this.location.href)
+        void this.goTo(this.location).catch((e) => toast.error(e.message));
+      return;
+    }
     if (
       this.restoring ||
       !this.container.clientHeight ||
@@ -423,10 +589,15 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       if (
         this.disposed ||
         this.restoring ||
+        this.configuringPages ||
         !this.container.clientHeight ||
         !this.container.clientWidth
       )
         return;
+      if (this.pages) {
+        this.reportPages();
+        return;
+      }
       this.rememberAnchor();
       if (this.interacted) this.report();
       // Keep distant chapters as measured placeholders. Selection/focus chapters
@@ -450,6 +621,10 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     });
   };
   private report() {
+    if (this.pages) {
+      this.reportPages();
+      return;
+    }
     if (!this.container.clientHeight) return;
     const top =
       this.container.getBoundingClientRect().top +
@@ -620,6 +795,20 @@ export class EPUBReaderAdapter implements ReaderAdapter {
             if (this.disposed || revision !== this.navigation) return;
           }
       }
+      if (this.pages && !canonical.blockId && canonical.progression) {
+        let remaining = Math.floor(
+          canonical.progression * chapter.info.characters,
+        );
+        for (const block of chapter.info.blocks) {
+          if (remaining <= block.text.length) {
+            canonical.blockId = block.id;
+            canonical.start = remaining;
+            canonical.end = remaining;
+            break;
+          }
+          remaining -= block.text.length;
+        }
+      }
       const slices = resolveEPUBLocation(canonical, this.blocks);
       for (const href of new Set(
         slices.map((slice) => slice.block.location.href),
@@ -672,13 +861,25 @@ export class EPUBReaderAdapter implements ReaderAdapter {
         range && range.getClientRects().length
           ? range.getBoundingClientRect().top
           : (target ?? element ?? chapter.node).getBoundingClientRect().top;
-      this.container.scrollTop +=
-        top -
-        this.container.getBoundingClientRect().top -
-        this.container.clientHeight * 0.5;
-      if (!slices.length && !target && progression)
+      if (this.pages) {
+        const rect =
+          range?.getClientRects()[0] ??
+          (target ?? element ?? chapter.node).getClientRects()[0];
+        if (rect)
+          this.pages.jump(
+            rect.left -
+              this.container.getBoundingClientRect().left +
+              this.container.scrollLeft,
+          );
+      } else {
         this.container.scrollTop +=
-          chapter.node.getBoundingClientRect().height * progression;
+          top -
+          this.container.getBoundingClientRect().top -
+          this.container.clientHeight * 0.5;
+        if (!slices.length && !target && progression)
+          this.container.scrollTop +=
+            chapter.node.getBoundingClientRect().height * progression;
+      }
       const anchor =
         fragmentBlock ??
         slices[0]?.block ??
@@ -734,12 +935,14 @@ export class EPUBReaderAdapter implements ReaderAdapter {
               this.unload(other);
           }
       }
+      this.pages?.progress(chapter.node);
       this.emitLocation();
       if (slices[0]) this.reportReadingAnchor(slices[0].block.id);
     } finally {
       if (revision === this.navigation) {
         this.restoring = false;
         this.rememberAnchor();
+        if (this.pages && !this.preparingPages) await this.preparePages(0);
       }
     }
   }
@@ -753,10 +956,12 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     return nodes.find((n) => n.getClientRects().length) ?? nodes[0];
   }
   async next() {
+    if (this.pages) return this.pages.turn(1);
     this.container.scrollTop += this.container.clientHeight * 0.85;
     this.onScroll();
   }
   async previous() {
+    if (this.pages) return this.pages.turn(-1);
     this.container.scrollTop -= this.container.clientHeight * 0.85;
     this.onScroll();
   }
@@ -1138,6 +1343,12 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     this.rememberAnchor();
     this.theme = theme;
     this.applyTheme();
+    const changed = await this.configurePages();
+    if (this.pages || changed) {
+      this.pages?.layout();
+      if (this.location.href) await this.goTo(this.location);
+      return;
+    }
     for (const chapter of this.chapters)
       if (!chapter.loaded)
         chapter.node.style.height = `${this.estimate(chapter.info)}px`;
@@ -1157,6 +1368,8 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     this.disposed = true;
     this.followOperation++;
     this.navigation++;
+    this.pages?.destroy();
+    this.pages = undefined;
     this.blockOverlay.destroy();
     this.abort.abort();
     this.observer?.disconnect();

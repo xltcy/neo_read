@@ -81,6 +81,14 @@ export function EPUBReadingView({
 }) {
   const mode = readingMode === "reflow" ? "parallel" : readingMode;
   const reflow = theme.textReflow === true;
+  const sourceTheme = useMemo(
+    () => ({
+      ...theme,
+      bookEpubFlow:
+        mode === "source" && !reflow ? theme.bookEpubFlow : ("scroll" as const),
+    }),
+    [theme, mode, reflow],
+  );
   const [companions, setCompanions] = useState<Map<string, HTMLElement>>(
     () => new Map(),
   );
@@ -750,7 +758,7 @@ export function EPUBReadingView({
       key={source.layoutRevision}
       active={active}
       document={source.document}
-      theme={theme}
+      theme={sourceTheme}
       annotations={annotations}
       onReady={(adapter, toc) => {
         engine.current = adapter;

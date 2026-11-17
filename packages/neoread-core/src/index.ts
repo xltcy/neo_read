@@ -445,6 +445,7 @@ export interface ReaderTheme {
   highlightColors?: HighlightColor[];
   /** Reflowable EPUB text scrolls vertically unless pages are chosen. */
   epubFlow?: "scroll" | "paginated";
+  bookEpubFlow?: "scroll" | "paginated";
 }
 export interface HighlightColor {
   /** #rrggbb */

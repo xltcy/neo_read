@@ -41,11 +41,13 @@ export function ReadingTextControls({
   theme,
   setTheme,
   docType,
+  library,
   readingMode,
 }: {
   theme: ReaderTheme;
   setTheme: SetTheme;
   docType: "pdf" | "epub";
+  library?: "books" | "papers";
   readingMode: ReadingMode;
 }) {
   const [installed, setInstalled] = useState(loadedLocalFontFamilies);
@@ -88,6 +90,27 @@ export function ReadingTextControls({
   const showSource = docType === "epub" || readingMode !== "translation";
   return (
     <div className="space-y-4">
+      {library === "books" &&
+        docType === "epub" &&
+        readingMode === "source" && (
+          <Section title="阅读方式">
+            <Select
+              value={theme.bookEpubFlow ?? "scroll"}
+              onValueChange={(value) => {
+                if (value === "scroll" || value === "paginated")
+                  setTheme({ bookEpubFlow: value });
+              }}
+            >
+              <SelectTrigger aria-label="阅读方式">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="scroll">连续滚动</SelectItem>
+                <SelectItem value="paginated">仿真翻页</SelectItem>
+              </SelectContent>
+            </Select>
+          </Section>
+        )}
       {showSource && (
         <>
           <Section title="原文">

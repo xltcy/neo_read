@@ -1249,6 +1249,7 @@ export function Workspace({
                   theme={theme}
                   setTheme={setTheme}
                   docType={doc.type}
+                  library={doc.library}
                   readingMode={readingMode}
                 />
               </div>

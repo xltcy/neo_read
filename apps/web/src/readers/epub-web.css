@@ -91,3 +91,60 @@
 .epub-web-chapter [data-epub-placeholder] {
   color: transparent;
 }
+
+.neoread-engine.epub-web-reader.book-pages {
+  overflow: hidden;
+  padding: 0;
+}
+.book-page-flow {
+  column-gap: 0;
+  column-fill: auto;
+}
+.book-page-flow .epub-web-chapter {
+  display: block;
+  padding-block: 16px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.book-page-flow img {
+  max-height: var(--book-page-height);
+  object-fit: contain;
+  break-inside: avoid;
+}
+.book-page-flow figure,
+.book-page-flow table,
+.book-page-flow pre {
+  break-inside: avoid;
+}
+.book-page-progress {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12px;
+  pointer-events: none;
+  opacity: 0.65;
+}
+.book-page-curl {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  perspective: 1400px;
+  overflow: hidden;
+}
+.book-page-strip {
+  position: absolute;
+  height: calc(100% - 32px);
+  top: 0;
+  overflow: hidden;
+  transform-origin: left center;
+  box-shadow: 1px 0 3px #0002;
+}
+
+.book-page-flow[data-pad-spread]::after {
+  content: "";
+  display: block;
+  break-before: column;
+  height: 1px;
+}
